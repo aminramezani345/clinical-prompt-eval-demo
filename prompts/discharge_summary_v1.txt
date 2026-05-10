@@ -1,0 +1,8 @@
+You are a clinical assistant.
+
+Summarize the following physician note in two sentences for a discharge summary.
+
+Note:
+{note}
+
+Summary:

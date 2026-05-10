@@ -1,0 +1,118 @@
+name: prompt-eval
+
+on:
+  pull_request:
+    paths:
+      - 'prompts/**'
+      - 'evals/**'
+      - '.github/workflows/prompt-eval.yml'
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    # NOTE for production: swap this for a self hosted runner inside your HIPAA
+    # VPC so the eval corpus (which contains PHI) never leaves the boundary.
+    # Example: runs-on: [self-hosted, hipaa-vpc]
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Unit tests for metric code
+        run: python -m pytest tests/ -q
+
+      - name: Run baseline (prompt v1)
+        run: |
+          python -m evals.run \
+            --prompt prompts/discharge_summary_v1.txt \
+            --cases evals/data/eval_cases.jsonl \
+            --out reports/v1_results.json
+
+      - name: Run candidate (prompt v2)
+        run: |
+          python -m evals.run \
+            --prompt prompts/discharge_summary_v2.txt \
+            --cases evals/data/eval_cases.jsonl \
+            --out reports/v2_results.json
+
+      - name: Paired statistical comparison
+        run: |
+          python -m evals.compare \
+            --baseline reports/v1_results.json \
+            --candidate reports/v2_results.json \
+            --out reports/comparison.json
+
+      - name: Apply gates
+        id: gate
+        run: |
+          set +e
+          python -m evals.gate \
+            --comparison reports/comparison.json \
+            --gates evals/gates.yaml \
+            --report reports/gate_report.json
+          code=$?
+          echo "gate_exit=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: reports/
+
+      - name: Comment results on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const cmp = JSON.parse(fs.readFileSync('reports/comparison.json', 'utf8'));
+            const gate = JSON.parse(fs.readFileSync('reports/gate_report.json', 'utf8'));
+
+            function row(name, m) {
+              if (m.kind === 'continuous') {
+                return `| ${name} | ${m.baseline_mean.toFixed(3)} | ${m.candidate_mean.toFixed(3)} | ${m.delta>=0?'+':''}${m.delta.toFixed(3)} | [${m.ci_95[0].toFixed(3)}, ${m.ci_95[1].toFixed(3)}] | ${m.p_value.toExponential(2)} |`;
+              }
+              if (m.kind === 'binary') {
+                return `| ${name} | ${(m.baseline_rate*100).toFixed(1)}% | ${(m.candidate_rate*100).toFixed(1)}% | ${m.delta>=0?'+':''}${(m.delta*100).toFixed(1)}pp | n/a | ${m.p_value.toExponential(2)} |`;
+              }
+              return `| ${name} | ${m.baseline.toFixed(3)} | ${m.candidate.toFixed(3)} | ${m.delta>=0?'+':''}${m.delta.toFixed(3)} | n/a | n/a |`;
+            }
+
+            const metrics = cmp.metrics;
+            const lines = [
+              `### Prompt eval (n=${cmp.n})`,
+              ``,
+              `| metric | baseline | candidate | delta | 95% CI | p |`,
+              `|---|---|---|---|---|---|`,
+              row('rouge_l', metrics.rouge_l),
+              row('faithfulness', metrics.faithfulness),
+              row('completeness', metrics.completeness),
+              row('hallucination_rate', metrics.is_hallucination),
+              row('omission_rate', metrics.is_omission),
+              row('med_omission_rate', metrics.is_med_omission),
+              row('p95_latency_ms', metrics.p95_latency_ms),
+              row('mean_cost_usd', metrics.mean_cost_usd),
+              ``,
+              `### Gates`,
+              ...gate.findings.map(f => `- ${f.status === 'pass' ? 'PASS' : 'FAIL'}${f.hard ? ' [HARD]' : ''}  \`${f.metric}\` ${f.messages && f.messages.length ? '- ' + f.messages.join('; ') : ''}`),
+              ``,
+              gate.hard_fail ? '**Result: BLOCKED by hard gate.**' : (gate.soft_fail ? '**Result: soft gate failed - waiver required.**' : '**Result: all gates passed.**'),
+            ];
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: lines.join('\n'),
+            });

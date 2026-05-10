@@ -1,0 +1,29 @@
+# Gate policy. Hard gates block merge unconditionally. Soft gates fail with
+# exit code 2 and can be overridden by a labeled PR plus a CODEOWNERS approval
+# from clinical safety.
+gates:
+  is_hallucination:
+    max_absolute: 0.02
+    max_delta: 0.005
+    hard: true
+  is_omission:
+    max_absolute: 0.05
+    max_delta: 0.005
+    hard: true
+  is_med_omission:
+    max_absolute: 0.05
+    max_delta: 0.005
+    hard: true
+  faithfulness:
+    min_absolute: 0.90
+    max_delta_negative: 0.01
+    hard: true
+  rouge_l:
+    max_delta_negative: 0.02
+    hard: false
+  p95_latency_ms:
+    max_increase_pct: 0.20
+    hard: false
+  mean_cost_usd:
+    max_increase_pct: 0.25
+    hard: false

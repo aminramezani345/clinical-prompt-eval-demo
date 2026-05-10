@@ -1,0 +1,8 @@
+# Anything in prompts/ or the gate policy requires a review from clinical safety.
+# In your real org, replace these with real GitHub teams (e.g. @your-org/clinical-safety).
+prompts/                @aminramezani345
+evals/gates.yaml        @aminramezani345
+evals/data/             @aminramezani345
+
+# Eval code itself can be reviewed by engineering only.
+evals/*.py              @aminramezani345
